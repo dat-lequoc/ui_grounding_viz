@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Big JSON Drag & Drop Viewer</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f9f9f9;
+    }
+    /* Drag & drop area */
+    #dropZone {
+      border: 3px dashed #aaa;
+      border-radius: 10px;
+      width: 90%;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 50px;
+      text-align: center;
+      color: #555;
+      font-size: 18px;
+      background: #fff;
+    }
+    /* Hide the viewer until JSON is loaded */
+    #viewer {
+      display: none;
+      padding: 10px;
+    }
+    /* Navigation bar (for multi-image navigation) */
+    #navigation {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #navigation button {
+      font-size: 16px;
+      padding: 5px 10px;
+      margin: 0 5px;
+    }
+    /* Two-panel layout */
+    #container {
+      display: flex;
+      height: calc(100vh - 150px);
+    }
+    #leftPanel {
+      flex: 3;
+      position: relative;
+      background: #ddd;
+      overflow: auto;
+      margin: 0 10px;
+      border: 1px solid #ccc;
+    }
+    #rightPanel {
+      flex: 1;
+      background: #fff;
+      padding: 10px;
+      margin: 0 10px;
+      border-left: 1px solid #ccc;
+      overflow-y: auto;
+    }
+    /* Canvas styling */
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <!-- Drag & Drop JSON file -->
+  <div id="dropZone">Drag and drop your JSON file here</div>
+  
+  <!-- Main viewer interface (hidden until file is loaded) -->
+  <div id="viewer">
+    <div id="navigation">
+      <button id="prevButton">&larr; Previous</button>
+      <span id="imageCounter">Image 1 of 1</span>
+      <button id="nextButton">Next &rarr;</button>
+    </div>
+    <div id="container">
+      <div id="leftPanel">
+        <canvas id="imageCanvas"></canvas>
+      </div>
+      <div id="rightPanel">
+        <h2>Element Details</h2>
+        <div id="elementDetails">
+          <p>Click on a box over the image to see details here.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // Global variables
+    let jsonData = null;         // The parsed JSON data (an array of images)
+    let currentImageIndex = 0;   // Index of the currently displayed image
+    let currentElements = [];    // The "elements" array for the current image
+    const canvas = document.getElementById("imageCanvas");
+    const ctx = canvas.getContext("2d");
+    const imageObj = new Image();
+
+    // Mapping from element types to colors (customize as needed)
+    function getColorForType(type) {
+      type = type.toLowerCase();
+      if (type === "uicontrol") return "#4ECDC4"; // e.g. turquoise
+      if (type === "text") return "#FF6B6B";       // e.g. red
+      return "#FFD93D";                           // default (yellow)
+    }
+
+    // Draw the current image and its element boxes on the canvas.
+    function drawImageAndBoxes() {
+      const imageData = jsonData[currentImageIndex];
+      let base64Str = imageData.image;
+      // If the image string is not already a data URL, assume PNG.
+      if (!base64Str.startsWith("data:")) {
+        base64Str = "data:image/png;base64," + base64Str;
+      }
+      imageObj.onload = function() {
+        // Set canvas dimensions to the provided image dimensions.
+        canvas.width = imageData.width;
+        canvas.height = imageData.height;
+        // Draw the image
+        ctx.drawImage(imageObj, 0, 0, imageData.width, imageData.height);
+        // Save the current elements array and draw the boxes.
+        currentElements = imageData.elements;
+        drawBoxes();
+      };
+      imageObj.src = base64Str;
+      // Update the navigation counter.
+      document.getElementById("imageCounter").innerText =
+        "Image " + (currentImageIndex + 1) + " of " + jsonData.length;
+    }
+
+    // Draw boxes (optionally highlighting one box) on top of the image.
+    // highlightedBoxIndex is the index of the box (if any) to highlight.
+    function drawBoxes(highlightedBoxIndex = null) {
+      const imageData = jsonData[currentImageIndex];
+      // Redraw the image first.
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(imageObj, 0, 0, imageData.width, imageData.height);
+      // For each element, compute its absolute bbox and draw a rectangle.
+      currentElements.forEach((element, index) => {
+        const bbox = element.bbox; // normalized [x1, y1, x2, y2]
+        const x1 = bbox[0] * imageData.width;
+        const y1 = bbox[1] * imageData.height;
+        const x2 = bbox[2] * imageData.width;
+        const y2 = bbox[3] * imageData.height;
+        const boxWidth = x2 - x1;
+        const boxHeight = y2 - y1;
+        // Choose color based on type.
+        let color = getColorForType(element.type);
+        // If this is the highlighted box, override with red and thicker stroke.
+        if (highlightedBoxIndex === index) {
+          color = "red";
+          ctx.lineWidth = 4;
+        } else {
+          ctx.lineWidth = 2;
+        }
+        ctx.strokeStyle = color;
+        ctx.strokeRect(x1, y1, boxWidth, boxHeight);
+      });
+    }
+
+    // When a user clicks on the canvas, check if they clicked inside a box.
+    canvas.addEventListener("click", function(e) {
+      const rect = canvas.getBoundingClientRect();
+      // Compute mouse position relative to canvas.
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      let clickedIndex = -1;
+      let smallestArea = Infinity;
+      const imageData = jsonData[currentImageIndex];
+      // Loop through all elements to see if the click is within its bbox.
+      currentElements.forEach((element, index) => {
+        const bbox = element.bbox;
+        const x1 = bbox[0] * imageData.width;
+        const y1 = bbox[1] * imageData.height;
+        const x2 = bbox[2] * imageData.width;
+        const y2 = bbox[3] * imageData.height;
+        if (x >= x1 && x <= x2 && y >= y1 && y <= y2) {
+          // If multiple boxes contain the point, choose the smallest (most specific) one.
+          const area = (x2 - x1) * (y2 - y1);
+          if (area < smallestArea) {
+            smallestArea = area;
+            clickedIndex = index;
+          }
+        }
+      });
+      // If an element was clicked, redraw with that box highlighted and show its details.
+      if (clickedIndex >= 0) {
+        drawBoxes(clickedIndex);
+        showElementDetails(currentElements[clickedIndex]);
+      }
+    });
+
+    // Display element details in the right panel.
+    function showElementDetails(element) {
+      const detailsDiv = document.getElementById("elementDetails");
+      detailsDiv.innerHTML = "";
+      const instrP = document.createElement("p");
+      instrP.innerHTML = "<strong>Instruction:</strong> " + element.instruction;
+      const typeP = document.createElement("p");
+      typeP.innerHTML = "<strong>Type:</strong> " + element.type;
+      // (Additional element properties can be added here if desired.)
+      detailsDiv.appendChild(instrP);
+      detailsDiv.appendChild(typeP);
+    }
+
+    // Navigation: previous and next image buttons.
+    document.getElementById("prevButton").addEventListener("click", function() {
+      if (currentImageIndex > 0) {
+        currentImageIndex--;
+        drawImageAndBoxes();
+        document.getElementById("elementDetails").innerHTML = "";
+      }
+    });
+    document.getElementById("nextButton").addEventListener("click", function() {
+      if (currentImageIndex < jsonData.length - 1) {
+        currentImageIndex++;
+        drawImageAndBoxes();
+        document.getElementById("elementDetails").innerHTML = "";
+      }
+    });
+
+    // Drag & drop handling for the JSON file.
+    const dropZone = document.getElementById("dropZone");
+    dropZone.addEventListener("dragover", function(e) {
+      e.preventDefault();
+      dropZone.style.background = "#f0f0f0";
+    });
+    dropZone.addEventListener("dragleave", function(e) {
+      e.preventDefault();
+      dropZone.style.background = "";
+    });
+    dropZone.addEventListener("drop", function(e) {
+      e.preventDefault();
+      dropZone.style.background = "";
+      const files = e.dataTransfer.files;
+      if (files.length) {
+        const file = files[0];
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          try {
+            jsonData = JSON.parse(e.target.result);
+            // Expecting the JSON to be an array of image objects.
+            if (!Array.isArray(jsonData)) {
+              alert("Invalid JSON format: expected an array.");
+              return;
+            }
+            // Hide the drop zone and show the viewer.
+            dropZone.style.display = "none";
+            document.getElementById("viewer").style.display = "block";
+            currentImageIndex = 0;
+            drawImageAndBoxes();
+          } catch (err) {
+            alert("Error parsing JSON file:\n" + err);
+          }
+        };
+        reader.readAsText(file);
+      }
+    });
+  </script>
+</body>
+</html>
